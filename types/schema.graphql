@@ -1,0 +1,167 @@
+input CreateCommunityInput {
+	name: String!
+	street: String
+	city: String
+	state: String
+	country: String
+	postalCode: String
+	phoneNumber: String!
+	email: String!
+	residentLimit: Int!
+	caretakerLimit: Int!
+}
+
+input CreateCaretakerInput {
+	communityId: ID
+	firstName: String!
+	lastName: String!
+	email: String!
+}
+
+type Caretaker implements User {
+	id: ID!
+	communityId: String!
+	firstName: String!
+	lastName: String!
+	email: String!
+	role: UserRole!
+	isActive: Boolean!
+	createdAt: AWSDateTime!
+	updatedAt: AWSDateTime!
+	consentSigned: AWSDateTime
+	signatureUrl: String
+}
+
+type CaretakerResponse {
+	exists: Boolean!
+	caretaker: Caretaker
+}
+
+#Completed
+type Community {
+	id: ID!
+	name: String!
+	street: String
+	city: String
+	state: String
+	country: String
+	postalCode: String
+	phoneNumber: String!
+	email: String!
+	residentLimit: Int!
+	caretakerLimit: Int!
+	isActive: Boolean!
+	createdAt: AWSDateTime!
+	updatedAt: AWSDateTime!
+}
+
+type Mutation {
+	updateExerciseList(input: UpdateExerciseListInput!): AssessmentExerciseList!
+	createAssessmentExerciseList(assessmentID: ID!, residentId: ID!): AssessmentExerciseList!
+	upsertExerciseDetails(input: UpsertExerciseDetailsInput!): Exercise!
+	updateAssessmentScores(input: UpdateAssessmentScoresInput!): AssessmentScores!
+	createCommunity(input: CreateCommunityInput!): Community!
+	updateCommunity(input: UpdateCommunityInput!): Community!
+	createResident(input: CreateResidentInput!): Resident!
+	createCaretaker(input: CreateCaretakerInput!): Caretaker!
+	createCommunityCaretaker(input: CreateCaretakerInput!): Caretaker!
+	createCommunityResident(input: CreateResidentInput!): Resident!
+	createAllStageBalance(input: CreateAllStageBalanceInput!): AllStageBalance!
+	createManager(input: CreateManagerInput!): Manager!
+	updateResident(input: UpdateResidentInput!): Resident!
+	updateCaretaker(input: UpdateCaretakerInput!): Caretaker!
+	updateManager(input: UpdateManagerInput!): Manager!
+	createExerciseResult(input: CreateExerciseResultInput!): ExerciseResult!
+	createCDCChecklist(input: CreateCDCChecklistInput!): CDCChecklist!
+	createStageBalanceResult(input: CreateStageBalanceResultInput!): StageBalanceResult!
+	createTugResult(input: CreateTugResultInput!): TugResult!
+	createAssessment(input: CreateAssessmentInput!): Assessment!
+	updateCommunityMetrics(communityId: ID!, residentId: ID!, overallResult: Int!): CommunityMetrics
+	createCDCChecklistV2(input: CreateCDCChecklistV2Input!): CDCChecklistV2
+	updateCDCChecklistV2(input: UpdateCDCChecklistV2Input!): CDCChecklistV2
+}
+
+type Query {
+	getAllExercises(limit: Int): [Exercise!]!
+	testAllExercises(limit: Int, nextToken: String): ExerciseConnection!
+	getAllExerciseLists(residentId: ID!, limit: Int, nextToken: String): [AssessmentExerciseList!]!
+	getCurrentExerciseList(residentId: ID!): AssessmentExerciseList
+	getFallIncidentsHistory(communityId: ID!): [FallIncidentHistoryPoint!]!
+	getRiskReductionHistory(communityId: ID!): [RiskReductionPoint!]!
+	getEngagementHistory(communityId: ID!): [EngagementHistoryMonth!]!
+	getParticipationHistory(communityId: ID!): [MonthlyParticipation!]!
+	getCommunityRiskReductionChange30d(communityId: ID!): Float!
+	getCommunityRiskImpact(communityId: ID!): CommunityRiskImpact
+	getFallIncidentChange30d(communityId: ID!): Int!
+	getCommunityDashboardMetrics(communityId: ID!): CommunityMetrics
+	getCommunityEngagementChange30d(communityId: ID!): Float!
+	getQuarterlyParticipationChange(communityId: ID!): Int!
+	residentsWithRecentFallsCount(communityId: ID!): Int!
+	getCommunityEngagement120d(communityId: ID!): Engagement120d!
+	getCommunityAssessmentStats(communityId: ID!): CommunityAssessmentStats!
+	getCommunityDashboardSnapshot(communityId: ID!, days: Int!, maxAssessments: Int): CommunityDashboardSnapshot!
+	getAllAssessmentsInCommunity(communityId: ID!): [[Assessment]]!
+	getGroupedResidentAssessments(
+		gender: Gender!,
+		ageRange: [Int!]!,
+		communityId: ID,
+		tugRange: Float,
+		limit: Int
+	): ResidentGrouping
+	getChairStandResult(id: String!): ExerciseResult!
+	getLatestContent(contentType: String!): Content
+	getUserByEmail(email: String!, role: String!): [Caretaker]!
+	getCommunityMetrics(communityId: String!, month: String!, year: String!): CommunityMetrics
+	getTugResult(id: ID!): TugResult
+	getLast12MonthsMetrics(communityId: String!): [CommunityMetrics]
+	caretakerExists(email: String!, communityId: String!): CaretakerResponse!
+	getCommunityResidents(communityId: ID!): [Resident]
+	residentExists(input: CreateResidentInput!): Boolean!
+	getResidentNames(residentIds: [ID!]!, communityId: ID!): [ResidentInfo!]!
+	getAssessmentOverTime(id: ID!): [Assessment]
+	listRecentResults(communityId: ID!, limit: Int, nextToken: String): ExerciseResultConnection!
+	getLatestCommunityResults(communityId: ID!): [CommunityResult!]!
+	listCDCChecklists(residentId: ID!, limit: Int, nextToken: String): CDCChecklistConnection!
+	getCommunity(id: ID!): Community
+	isValidCommunity(id: ID!): Boolean!
+	getRecentCommunityAssessments(communityId: ID!, limit: Int, nextToken: String): ExerciseResultWithResidentConnection!
+	getCommunityAssessments(communityId: ID!, limit: Int, nextToken: String): [Assessment!]!
+	getRecentResults(communityId: ID!, limit: Int): [RecentResult!]!
+	getRecentCheckLists(communityId: ID!, limit: Int): CDCChecklistConnection!
+	getResidentCheckLists(residentId: ID!, communityId: ID!, limit: Int): CDCChecklistConnection!
+	getResidentsInfo(communityId: ID!, residentIds: [ID!]!): [ResidentInfo!]!
+	#Unwanted 
+	listAllCommunities(limit: Int, nextToken: String): CommunityConnection!
+	getResident(communityId: ID!, id: ID!): Resident
+	listUsersInCommunity(communityId: ID!, limit: Int, nextToken: String): UserConnection!
+	listResidents(communityId: ID!): [Resident]
+	listResults(communityId: ID!): [ResultWithResidentName]
+	getR(communityId: ID!): [Resident]
+	getResidentsByIds(communityId: String!): ResidentResults!
+	listExerciseResults(communityId: ID!, limit: Int, nextToken: String): ExerciseResultConnection!
+	#	getRecentResultsInCommunity(communityId: ID!, limit: Int): [RecentResult!]!
+	getRecentResultsInCommunity(communityId: String!): Result
+	getResidentAssessments(residentId: ID!): [Assessment]
+	getLast5Assessments(residentId: ID!): [Assessment]
+	searchResidentsByName(
+		communityId: ID!,
+		searchText: String!,
+		limit: Int,
+		nextToken: String
+	): ResidentSearchConnection
+	getLatestAssessments(residentIds: [ID!]!, nextToken: String): [Assessment]
+	getResidentsAssessments(input: GetResidentsAssessmentsInput!): [ResidentLastAssessment]
+	listResultsInCommunityWithResidentNames(communityId: ID!): [ResultWithResidentName!]!
+	getStageBalanceResult(id: ID!): StageBalanceResult
+	getCDCChecklistV2(id: ID!): CDCChecklistV2
+	listCDCChecklistV2sByResident(residentId: ID!, limit: Int, nextToken: String): CDCChecklistV2Connection
+	listCDCChecklistV2sByCommunity(communityId: ID!, limit: Int, nextToken: String): CDCChecklistV2Connection
+	getCDCChecklistV2Questions: [CDCChecklistV2Question!]!
+	getResidentsLastAssessmentsByDemographic(
+		age: Int!,
+		gender: Gender!,
+		ageRange: Int,
+		communityId: ID,
+		limit: Int
+	): [ResidentAssessmentSummary!]!
+}
