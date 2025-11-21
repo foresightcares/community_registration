@@ -39,6 +39,7 @@ uv pip install -r requirements.txt
 All project configuration is managed through the `env.local` file. This file contains:
 - AWS region
 - AWS AppSync API URL
+- AWS Cognito User Pool ID (required for user authentication)
 - Optional AWS credentials (if not using ~/.aws/credentials)
 - Optional AWS profile name
 
@@ -46,6 +47,10 @@ All project configuration is managed through the `env.local` file. This file con
 
 1. **APPSYNC_API_URL** - Set your AWS AppSync GraphQL endpoint
 2. **AWS_REGION** - Set your AWS region (default: us-east-1)
+3. **COGNITO_USER_POOL_ID** - **REQUIRED**: Set your AWS Cognito User Pool ID for user registration and authentication
+4. **COGNITO_CLIENT_ID** - **REQUIRED**: Set your Cognito User Pool App Client ID for authentication
+5. **COGNITO_IDENTITY_POOL_ID** - (Optional) Set your Cognito Identity Pool ID if using Identity Pool features
+6. **APPSYNC_API_KEY** - (Optional) API Key for AppSync if using API Key authentication instead of Cognito JWT
 
 ### AWS Credentials Setup
 
@@ -144,12 +149,18 @@ See `example_graphql.py` for complete examples of:
    source .venv/bin/activate
    python process_registration.py input_sample/Community_Registration.xlsx
    ```
-
-3. **Optional flags:**
-   ```bash
-   # Use createCommunityCaretaker mutation instead of createCaretaker
-   python process_registration.py input_sample/Community_Registration.xlsx --community-caretaker
-   ```
+   
+   The processor uses `createCommunityCaretaker` mutation for all caretaker creation.
+   
+   **Cognito Integration (Required):**
+   - Cognito integration is **required** for user authentication
+   - The system will:
+     - Create a Cognito group for each community
+     - Add caretakers to Cognito User Pool after GraphQL creation
+     - Automatically send invitation emails with temporary passwords
+     - Assign users to their community's Cognito group
+   - Users must verify their email addresses (email_verified is set to false)
+   - **If any Cognito operation fails, the entire process will fail** since users cannot login without Cognito registration
 
 ### Excel File Format
 
@@ -201,8 +212,52 @@ This creates `sample_registration.xlsx` with example communities and caretakers.
 |----------|----------|---------|-------------|
 | `APPSYNC_API_URL` | Yes | - | AWS AppSync GraphQL endpoint URL |
 | `AWS_REGION` | No | `us-east-1` | AWS region for your AppSync API |
+| `COGNITO_USER_POOL_ID` | **Yes** | - | AWS Cognito User Pool ID for user registration and authentication |
+| `COGNITO_CLIENT_ID` | **Yes** | - | Cognito User Pool App Client ID for authentication |
+| `COGNITO_IDENTITY_POOL_ID` | No | - | Cognito Identity Pool ID (optional, for Identity Pool features) |
+| `APPSYNC_API_KEY` | No | - | API Key for AppSync (fallback if not using Cognito JWT) |
 | `AWS_ACCESS_KEY_ID` | No | - | AWS access key (if not using ~/.aws/credentials) |
 | `AWS_SECRET_ACCESS_KEY` | No | - | AWS secret key (if not using ~/.aws/credentials) |
 | `AWS_SESSION_TOKEN` | No | - | AWS session token (for temporary credentials) |
 | `AWS_PROFILE` | No | `default` | AWS profile name from ~/.aws/credentials |
+
+### AppSync Authentication
+
+The script uses **Cognito User Pool JWT authentication** for AppSync GraphQL requests:
+
+1. **Cognito JWT Authentication (Primary)**: 
+   - Prompts for username and password at runtime
+   - Authenticates with Cognito User Pool using the specified App Client ID
+   - Uses JWT token in Authorization header for all GraphQL requests
+   - Requires `COGNITO_USER_POOL_ID` and `COGNITO_CLIENT_ID` to be set
+   - Your AppSync API must have Cognito User Pool authentication enabled
+   - The App Client must have `USER_PASSWORD_AUTH` flow enabled
+
+2. **API Key Authentication (Fallback)**: 
+   - Set `APPSYNC_API_KEY` in `env.local` to use API Key instead
+   - Requires API Key authentication to be enabled on your AppSync API
+
+3. **IAM Authentication (Fallback)**: 
+   - Only used if neither JWT token nor API Key is provided
+   - Requires IAM authentication to be enabled on your AppSync API
+
+**Note**: The script will prompt you for username and password when you run it. This authenticates you with Cognito User Pool to get a JWT token that's used for all GraphQL operations. You must specify the `COGNITO_CLIENT_ID` since there may be multiple App Clients in your User Pool.
+
+### Cognito Integration (Required)
+
+Cognito integration is **mandatory** for user authentication. The system will fail if Cognito operations cannot be completed, as users cannot login without proper Cognito registration.
+
+The system automatically:
+
+1. **Creates Cognito Groups**: One group per community (named `community-{communityId}`)
+2. **Registers Users**: Adds caretakers to Cognito User Pool after GraphQL creation
+3. **Sends Invitations**: Automatically sends invitation emails with temporary passwords
+4. **Assigns to Groups**: Assigns each user to their community's Cognito group
+5. **Email Verification**: Sets `email_verified` to `false` - users must verify their email addresses
+
+**Important Notes**:
+- The system uses email addresses as usernames in Cognito
+- Users will receive invitation emails and must verify their email addresses before they can fully access the system
+- **If any Cognito operation fails (group creation, user registration, etc.), the entire process will terminate with an error**
+- This ensures data consistency - users are only created if they can successfully authenticate
 
