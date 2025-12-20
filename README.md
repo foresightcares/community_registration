@@ -36,14 +36,29 @@ uv pip install -r requirements.txt
 
 ### Configuration File: `env.local`
 
-All project configuration is managed through the `env.local` file. This file contains:
-- AWS region
-- AWS AppSync API URL
-- AWS Cognito User Pool ID (required for user authentication)
-- Optional AWS credentials (if not using ~/.aws/credentials)
-- Optional AWS profile name
+All project configuration is managed through the `env.local` file using INI-style sections for different environments.
 
-**Edit `env.local` and update the following:**
+The file supports two environment sections:
+- `[DEV]` - Development environment configuration
+- `[PRD]` - Production environment configuration
+
+**Example `env.local` format:**
+
+```ini
+[PRD]
+APPSYNC_API_URL=https://your-prod-api.appsync-api.us-east-1.amazonaws.com/graphql
+COGNITO_USER_POOL_ID=us-east-1_XXXXXXXXX
+COGNITO_IDENTITY_POOL_ID=us-east-1:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+COGNITO_CLIENT_ID=your-prod-client-id
+
+[DEV]
+APPSYNC_API_URL=https://your-dev-api.appsync-api.us-east-1.amazonaws.com/graphql
+COGNITO_USER_POOL_ID=us-east-1_YYYYYYYYY
+COGNITO_IDENTITY_POOL_ID=us-east-1:yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
+COGNITO_CLIENT_ID=your-dev-client-id
+```
+
+**Configuration variables for each environment:**
 
 1. **APPSYNC_API_URL** - Set your AWS AppSync GraphQL endpoint
 2. **AWS_REGION** - Set your AWS region (default: us-east-1)
@@ -81,14 +96,21 @@ AWS_SECRET_ACCESS_KEY=your_secret_key_here
 
 ## Usage
 
-The project automatically loads configuration from `env.local` using `python-dotenv`.
+The project loads configuration from `env.local` based on the selected environment (DEV or PRD).
 
 ### Quick Start
 
-1. **Edit `env.local`** - Update your AWS AppSync API URL and region:
-   ```bash
-   APPSYNC_API_URL=https://your-actual-api-id.appsync-api.us-east-1.amazonaws.com/graphql
-   AWS_REGION=us-east-1
+1. **Edit `env.local`** - Configure both DEV and PRD sections with appropriate values:
+   ```ini
+   [DEV]
+   APPSYNC_API_URL=https://your-dev-api.appsync-api.us-east-1.amazonaws.com/graphql
+   COGNITO_USER_POOL_ID=us-east-1_XXXXXXXXX
+   COGNITO_CLIENT_ID=your-dev-client-id
+   
+   [PRD]
+   APPSYNC_API_URL=https://your-prod-api.appsync-api.us-east-1.amazonaws.com/graphql
+   COGNITO_USER_POOL_ID=us-east-1_YYYYYYYYY
+   COGNITO_CLIENT_ID=your-prod-client-id
    ```
 
 2. **Run the example script:**
@@ -147,10 +169,21 @@ See `example_graphql.py` for complete examples of:
 2. **Run the processor:**
    ```bash
    source .venv/bin/activate
+   
+   # Interactive mode - prompts for environment selection
    python process_registration.py input_sample/Community_Registration.xlsx
+   
+   # Or specify environment directly
+   python process_registration.py input_sample/Community_Registration.xlsx --env DEV
+   python process_registration.py input_sample/Community_Registration.xlsx --env PRD
    ```
    
    The processor uses `createCommunityCaretaker` mutation for all caretaker creation.
+   
+   **Environment Selection:**
+   - If no `--env` argument is provided, you'll be prompted to select DEV or PRD
+   - When selecting PRD (Production), you'll see a warning and must type "yes" to confirm
+   - This helps prevent accidental modifications to production data
    
    **Cognito Integration (Required):**
    - Cognito integration is **required** for user authentication

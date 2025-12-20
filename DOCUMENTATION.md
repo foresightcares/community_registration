@@ -14,6 +14,7 @@ This project has two main documentation files, each serving a different purpose:
 - Installation and environment setup
 - Project structure and file organization
 - Complete environment variables reference
+- Multi-environment configuration (DEV/PRD)
 - AWS configuration details
 - Cognito integration technical details
 - Code examples for integration
@@ -32,9 +33,11 @@ This project has two main documentation files, each serving a different purpose:
 
 **Contents**:
 - Quick setup instructions
+- Environment selection guide (DEV/PRD)
 - Step-by-step processing guide
 - Excel file format requirements
 - Example output and results
+- Command line options reference
 - Common troubleshooting scenarios
 - Practical usage examples
 

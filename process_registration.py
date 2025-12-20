@@ -6,8 +6,8 @@ import os
 import sys
 import time
 import getpass
+import configparser
 import openpyxl
-from dotenv import load_dotenv
 from gql import gql, Client
 from gql.transport.requests import RequestsHTTPTransport
 from requests_aws4auth import AWS4Auth
@@ -15,8 +15,86 @@ import boto3
 from botocore.exceptions import ClientError
 from typing import Dict, List, Optional, Tuple
 
-# Load environment variables from env.local file
-load_dotenv('env.local')
+# Global variable to store selected environment config
+_env_config = {}
+
+
+def load_environment_config(env_name: str, config_file: str = 'env.local') -> Dict[str, str]:
+    """
+    Load environment configuration from INI-style config file
+    
+    Args:
+        env_name: Environment name ('DEV' or 'PRD')
+        config_file: Path to the configuration file
+    
+    Returns:
+        Dictionary with configuration values
+    
+    Raises:
+        ValueError: If environment section not found
+    """
+    global _env_config
+    
+    config = configparser.ConfigParser()
+    config.read(config_file)
+    
+    env_name_upper = env_name.upper()
+    
+    if env_name_upper not in config.sections():
+        available = ', '.join(config.sections()) if config.sections() else 'None'
+        raise ValueError(f"Environment '{env_name_upper}' not found in {config_file}. Available: {available}")
+    
+    _env_config = dict(config[env_name_upper])
+    
+    # Also set as environment variables for compatibility
+    for key, value in _env_config.items():
+        os.environ[key.upper()] = value
+    
+    return _env_config
+
+
+def get_config(key: str, default: str = None) -> Optional[str]:
+    """
+    Get configuration value from loaded environment config
+    
+    Args:
+        key: Configuration key (case-insensitive)
+        default: Default value if key not found
+    
+    Returns:
+        Configuration value or default
+    """
+    # Try from loaded config first
+    value = _env_config.get(key.lower())
+    if value:
+        return value
+    
+    # Fall back to environment variable
+    return os.getenv(key.upper(), default)
+
+
+def print_graphql_for_console(operation_name: str, query_string: str, variables: Dict) -> None:
+    """
+    Print GraphQL query/mutation in a format that can be copied to AppSync Console
+    
+    Args:
+        operation_name: Name of the operation (for display)
+        query_string: The GraphQL query/mutation string
+        variables: The variables dictionary
+    """
+    import json
+    
+    print("\n" + "─"*70)
+    print(f"📋 GRAPHQL DEBUG - {operation_name}")
+    print("─"*70)
+    print("\n🔹 QUERY/MUTATION:")
+    print("─"*50)
+    print(query_string.strip())
+    print("─"*50)
+    print("\n🔹 VARIABLES:")
+    print("─"*50)
+    print(json.dumps(variables, indent=2, default=str))
+    print("─"*50 + "\n")
 
 
 def create_appsync_client(api_url: str = None, region: str = None, jwt_token: str = None, api_key: str = None):
@@ -39,12 +117,12 @@ def create_appsync_client(api_url: str = None, region: str = None, jwt_token: st
     """
     # Get configuration from environment variables if not provided
     if api_url is None:
-        api_url = os.getenv('APPSYNC_API_URL')
+        api_url = get_config('APPSYNC_API_URL')
         if not api_url:
             raise ValueError("APPSYNC_API_URL must be set in env.local or passed as parameter")
     
     if region is None:
-        region = os.getenv('AWS_REGION', 'us-east-1')
+        region = get_config('AWS_REGION', 'us-east-1')
     
     # Priority 1: Use JWT token authentication (Cognito User Pool)
     if jwt_token:
@@ -57,8 +135,8 @@ def create_appsync_client(api_url: str = None, region: str = None, jwt_token: st
             use_json=True,
         )
     # Priority 2: Check for API Key authentication
-    elif api_key or os.getenv('APPSYNC_API_KEY'):
-        api_key = api_key or os.getenv('APPSYNC_API_KEY')
+    elif api_key or get_config('APPSYNC_API_KEY'):
+        api_key = api_key or get_config('APPSYNC_API_KEY')
         headers = {
             'x-api-key': api_key
         }
@@ -69,7 +147,7 @@ def create_appsync_client(api_url: str = None, region: str = None, jwt_token: st
         )
     # Priority 3: Use IAM authentication (AWS Signature Version 4)
     else:
-        aws_profile = os.getenv('AWS_PROFILE')
+        aws_profile = get_config('AWS_PROFILE')
         
         # Get AWS credentials
         session_kwargs = {}
@@ -117,10 +195,10 @@ def create_cognito_client(region: str = None):
         boto3 Cognito Identity Provider client
     """
     if region is None:
-        region = os.getenv('AWS_REGION', 'us-east-1')
+        region = get_config('AWS_REGION', 'us-east-1')
     
     # Get AWS profile if specified
-    aws_profile = os.getenv('AWS_PROFILE')
+    aws_profile = get_config('AWS_PROFILE')
     
     # Create session with profile if specified
     session_kwargs = {}
@@ -151,7 +229,7 @@ def authenticate_cognito_user(user_pool_id: str, client_id: str, username: str, 
         Exception: If authentication fails
     """
     if region is None:
-        region = os.getenv('AWS_REGION', 'us-east-1')
+        region = get_config('AWS_REGION', 'us-east-1')
     
     cognito_idp_client = create_cognito_client(region)
     
@@ -175,7 +253,69 @@ def authenticate_cognito_user(user_pool_id: str, client_id: str, username: str, 
         if 'ChallengeName' in response:
             challenge_name = response['ChallengeName']
             if challenge_name == 'NEW_PASSWORD_REQUIRED':
-                raise Exception("New password required. Please change your password first using the Cognito console or mobile app.")
+                print("\n" + "="*60)
+                print("PASSWORD CHANGE REQUIRED")
+                print("="*60)
+                print("Your account requires a password change.")
+                print("Please enter a new password.")
+                print("\nPassword requirements:")
+                print("  • Minimum 8 characters")
+                print("  • At least one uppercase letter")
+                print("  • At least one lowercase letter")
+                print("  • At least one number")
+                print("  • At least one special character (!@#$%^&*)")
+                print("="*60)
+                
+                # Prompt for new password
+                new_password = getpass.getpass("Enter new password: ")
+                if not new_password:
+                    raise Exception("New password cannot be empty")
+                
+                confirm_password = getpass.getpass("Confirm new password: ")
+                if new_password != confirm_password:
+                    raise Exception("Passwords do not match")
+                
+                # Get session from challenge response
+                session = response.get('Session')
+                
+                # Get required attributes from challenge parameters
+                challenge_params = response.get('ChallengeParameters', {})
+                user_attributes = challenge_params.get('userAttributes', '{}')
+                
+                # Respond to the NEW_PASSWORD_REQUIRED challenge
+                print("\n  Setting new password...")
+                try:
+                    challenge_response = cognito_idp_client.respond_to_auth_challenge(
+                        ClientId=client_id,
+                        ChallengeName='NEW_PASSWORD_REQUIRED',
+                        Session=session,
+                        ChallengeResponses={
+                            'USERNAME': username,
+                            'NEW_PASSWORD': new_password,
+                        }
+                    )
+                    
+                    # Check if there's another challenge
+                    if 'ChallengeName' in challenge_response:
+                        raise Exception(f"Additional challenge required: {challenge_response['ChallengeName']}. Please complete via Cognito console.")
+                    
+                    # Get the ID token from the successful response
+                    if 'AuthenticationResult' not in challenge_response:
+                        raise Exception("Password change response missing AuthenticationResult")
+                    
+                    id_token = challenge_response['AuthenticationResult']['IdToken']
+                    print(f"  ✓ Password changed successfully")
+                    print(f"  ✓ Successfully obtained JWT token")
+                    return id_token
+                    
+                except ClientError as challenge_error:
+                    error_code = challenge_error.response.get('Error', {}).get('Code', '')
+                    error_message = challenge_error.response.get('Error', {}).get('Message', '')
+                    
+                    if error_code == 'InvalidPasswordException':
+                        raise Exception(f"Password does not meet requirements: {error_message}")
+                    else:
+                        raise Exception(f"Failed to set new password: {error_code} - {error_message}")
             else:
                 raise Exception(f"Authentication challenge required: {challenge_name}. Please complete the challenge first.")
         
@@ -622,7 +762,7 @@ def update_excel_with_community_id(file_path: str, community_id: str) -> None:
         print(f"  ⚠ Warning: Could not update Excel file with CommunityId: {str(e)}")
 
 
-def check_community_group_exists(client: Client, cognito_client, user_pool_id: str, community_email: str, community_name: str) -> Tuple[bool, str]:
+def check_community_group_exists(client: Client, cognito_client, user_pool_id: str, community_email: str, community_name: str, verbose: bool = False) -> Tuple[bool, str]:
     """
     Check if a community group already exists in Cognito by:
     1. Querying GraphQL to see if a community with the same email exists
@@ -634,6 +774,7 @@ def check_community_group_exists(client: Client, cognito_client, user_pool_id: s
         user_pool_id: Cognito User Pool ID
         community_email: Community email address
         community_name: Community name
+        verbose: If True, print detailed debugging information
     
     Returns:
         Tuple of (group_exists: bool, group_name: str)
@@ -641,7 +782,7 @@ def check_community_group_exists(client: Client, cognito_client, user_pool_id: s
     try:
         # First, try to find if a community with this email exists via GraphQL
         # Query all communities and check for matching email
-        query = gql("""
+        query_string = """
             query ListCommunities($limit: Int) {
                 listAllCommunities(limit: $limit) {
                     items {
@@ -651,10 +792,15 @@ def check_community_group_exists(client: Client, cognito_client, user_pool_id: s
                     }
                 }
             }
-        """)
+        """
+        query = gql(query_string)
+        variables = {"limit": 1000}
+        
+        if verbose:
+            print_graphql_for_console("CHECK COMMUNITY GROUP EXISTS", query_string, variables)
         
         try:
-            result = client.execute(query, variable_values={"limit": 1000})
+            result = client.execute(query, variable_values=variables)
             communities = result.get('listAllCommunities', {}).get('items', [])
             
             # Check if any community has the same email
@@ -860,7 +1006,7 @@ def create_community(client: Client, community_data: Dict, verbose: bool = False
     Returns:
         Created community data or None if failed
     """
-    mutation = gql("""
+    mutation_string = """
         mutation CreateCommunity($input: CreateCommunityInput!) {
             createCommunity(input: $input) {
                 id
@@ -879,25 +1025,20 @@ def create_community(client: Client, community_data: Dict, verbose: bool = False
                 updatedAt
             }
         }
-    """)
+    """
+    mutation = gql(mutation_string)
+    variables = {'input': community_data}
     
     if verbose:
+        print_graphql_for_console("CREATE COMMUNITY", mutation_string, variables)
         print(f"\n  [VERBOSE] GraphQL Mutation:")
         print(f"    Mutation: createCommunity")
         print(f"    Input data: {community_data}")
-        print(f"    Full mutation string:")
-        print(f"      mutation CreateCommunity($input: CreateCommunityInput!) {{")
-        print(f"        createCommunity(input: $input) {{")
-        print(f"          id, name, street, city, state, country, postalCode,")
-        print(f"          phoneNumber, email, residentLimit, caretakerLimit,")
-        print(f"          isActive, createdAt, updatedAt")
-        print(f"        }}")
-        print(f"      }}")
     
     try:
         if verbose:
             print(f"  [VERBOSE] Executing mutation...")
-        result = client.execute(mutation, variable_values={'input': community_data})
+        result = client.execute(mutation, variable_values=variables)
         
         if verbose:
             print(f"  [VERBOSE] Mutation result: {result}")
@@ -911,6 +1052,9 @@ def create_community(client: Client, community_data: Dict, verbose: bool = False
             error_details = e
         
         print(f"Error creating community '{community_data.get('name')}': {error_details}")
+        
+        # Always print GraphQL debug info on error (helps with debugging)
+        print_graphql_for_console("CREATE COMMUNITY (FAILED)", mutation_string, variables)
         
         if verbose:
             print(f"\n  [VERBOSE] Error Details:")
@@ -928,18 +1072,19 @@ def create_community(client: Client, community_data: Dict, verbose: bool = False
         return None
 
 
-def verify_caretaker_created(client: Client, email: str) -> bool:
+def verify_caretaker_created(client: Client, email: str, verbose: bool = False) -> bool:
     """
     Verify that a caretaker was created correctly by querying getUserByEmail
     
     Args:
         client: GraphQL client
         email: Email address of the caretaker to verify
+        verbose: If True, print detailed debugging information
     
     Returns:
         True if caretaker is found, False otherwise
     """
-    query = gql("""
+    query_string = """
         query GetUserByEmail($email: String!, $role: String!) {
             getUserByEmail(email: $email, role: $role) {
                 id
@@ -951,17 +1096,24 @@ def verify_caretaker_created(client: Client, email: str) -> bool:
                 isActive
             }
         }
-    """)
+    """
+    query = gql(query_string)
+    variables = {
+        'email': email,
+        'role': 'CARETAKER'
+    }
+    
+    if verbose:
+        print_graphql_for_console("VERIFY CARETAKER", query_string, variables)
     
     try:
-        result = client.execute(query, variable_values={
-            'email': email,
-            'role': 'CARETAKER'
-        })
+        result = client.execute(query, variable_values=variables)
         users = result.get('getUserByEmail', [])
         return len(users) > 0
     except Exception as e:
         print(f"  ⚠ Verification query error: {str(e)}")
+        # Print debug info on error
+        print_graphql_for_console("VERIFY CARETAKER (FAILED)", query_string, variables)
         return False
 
 
@@ -977,7 +1129,7 @@ def create_caretaker(client: Client, caretaker_data: Dict, verbose: bool = False
     Returns:
         Created caretaker data or None if failed
     """
-    mutation = gql("""
+    mutation_string = """
         mutation CreateCommunityCaretaker($input: CreateCaretakerInput!) {
             createCommunityCaretaker(input: $input) {
                 id
@@ -991,24 +1143,21 @@ def create_caretaker(client: Client, caretaker_data: Dict, verbose: bool = False
                 updatedAt
             }
         }
-    """)
+    """
+    mutation = gql(mutation_string)
+    variables = {'input': caretaker_data}
     
     if verbose:
+        print_graphql_for_console("CREATE CARETAKER", mutation_string, variables)
         print(f"\n  [VERBOSE] GraphQL Mutation:")
         print(f"    Mutation: createCommunityCaretaker")
         print(f"    Input data: {caretaker_data}")
         print(f"    Community ID: {caretaker_data.get('communityId', 'NOT SET')}")
-        print(f"    Full mutation string:")
-        print(f"      mutation CreateCommunityCaretaker($input: CreateCaretakerInput!) {{")
-        print(f"        createCommunityCaretaker(input: $input) {{")
-        print(f"          id, communityId, firstName, lastName, email, role, isActive, createdAt, updatedAt")
-        print(f"        }}")
-        print(f"      }}")
     
     try:
         if verbose:
             print(f"  [VERBOSE] Executing mutation...")
-        result = client.execute(mutation, variable_values={'input': caretaker_data})
+        result = client.execute(mutation, variable_values=variables)
         
         if verbose:
             print(f"  [VERBOSE] Mutation result: {result}")
@@ -1022,6 +1171,9 @@ def create_caretaker(client: Client, caretaker_data: Dict, verbose: bool = False
             error_details = e
         
         print(f"Error creating caretaker '{caretaker_data.get('firstName')} {caretaker_data.get('lastName')}': {error_details}")
+        
+        # Always print GraphQL debug info on error (helps with debugging)
+        print_graphql_for_console("CREATE CARETAKER (FAILED)", mutation_string, variables)
         
         if verbose:
             print(f"\n  [VERBOSE] Error Details:")
@@ -1077,8 +1229,8 @@ def process_excel_file(file_path: str, verbose: bool = False) -> Dict:
     TOTAL_STEPS = 4
     
     # Authenticate with Cognito User Pool to get JWT token for GraphQL
-    cognito_user_pool_id = os.getenv('COGNITO_USER_POOL_ID')
-    cognito_client_id = os.getenv('COGNITO_CLIENT_ID')
+    cognito_user_pool_id = get_config('COGNITO_USER_POOL_ID')
+    cognito_client_id = get_config('COGNITO_CLIENT_ID')
     
     if not cognito_user_pool_id:
         print("\n" + "="*60)
@@ -1219,7 +1371,8 @@ def process_excel_file(file_path: str, verbose: bool = False) -> Dict:
                 cognito_client,
                 cognito_user_pool_id,
                 community_email,
-                community_name
+                community_name,
+                verbose=verbose
             )
             
             if group_exists:
@@ -1359,7 +1512,7 @@ def process_excel_file(file_path: str, verbose: bool = False) -> Dict:
                 sys.exit(1)
             
             print(f"  Verifying caretaker creation...")
-            is_verified = verify_caretaker_created(client, caretaker_email)
+            is_verified = verify_caretaker_created(client, caretaker_email, verbose=verbose)
             if is_verified:
                 print(f"  ✓ Verification successful: Caretaker found in system")
             else:
@@ -1494,7 +1647,7 @@ def process_excel_file(file_path: str, verbose: bool = False) -> Dict:
             
             # Verify admin caretaker was created correctly
             print(f"  Verifying admin caretaker creation...")
-            is_verified = verify_caretaker_created(client, community_email)
+            is_verified = verify_caretaker_created(client, community_email, verbose=verbose)
             if is_verified:
                 print(f"  ✓ Verification successful: Admin caretaker found in system")
             else:
@@ -1546,6 +1699,54 @@ def process_excel_file(file_path: str, verbose: bool = False) -> Dict:
     return summary
 
 
+def select_environment() -> str:
+    """
+    Prompt user to select environment (DEV or PRD)
+    
+    Returns:
+        Selected environment name
+    """
+    print("\n" + "="*60)
+    print("ENVIRONMENT SELECTION")
+    print("="*60)
+    print("\nAvailable environments:")
+    print("  1. DEV  - Development environment")
+    print("  2. PRD  - Production environment")
+    print("")
+    
+    while True:
+        choice = input("Select environment (1 for DEV, 2 for PRD): ").strip()
+        
+        if choice == '1':
+            print("\n  ✓ Selected: DEV (Development)")
+            return 'DEV'
+        elif choice == '2':
+            # Show production warning
+            print("\n" + "!"*60)
+            print("⚠️  WARNING: PRODUCTION ENVIRONMENT SELECTED ⚠️")
+            print("!"*60)
+            print("")
+            print("You are about to work with the PRODUCTION environment.")
+            print("This will create REAL communities and users in the live system.")
+            print("")
+            print("Changes made in production:")
+            print("  • Cannot be easily undone")
+            print("  • Will affect real users")
+            print("  • May send emails to actual users")
+            print("")
+            print("!"*60)
+            
+            confirm = input("\nAre you sure you want to continue with PRODUCTION? (type 'yes' to confirm): ").strip().lower()
+            
+            if confirm == 'yes':
+                print("\n  ✓ Confirmed: PRD (Production)")
+                return 'PRD'
+            else:
+                print("\n  ✗ Production not confirmed. Please select again.\n")
+        else:
+            print("  Invalid choice. Please enter 1 or 2.")
+
+
 def main():
     """Main function to process registration"""
     import argparse
@@ -1554,6 +1755,8 @@ def main():
     parser.add_argument('file', help='Path to Excel file')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose output for debugging')
+    parser.add_argument('--env', '-e', choices=['DEV', 'PRD', 'dev', 'prd'],
+                       help='Environment to use (DEV or PRD). If not specified, will prompt for selection.')
     
     args = parser.parse_args()
     
@@ -1563,12 +1766,46 @@ def main():
         print(f"Error: File '{args.file}' not found")
         return
     
-    print("="*60)
+    # Select or confirm environment
+    if args.env:
+        env_name = args.env.upper()
+        if env_name == 'PRD':
+            # Show production warning even when specified via command line
+            print("\n" + "!"*60)
+            print("⚠️  WARNING: PRODUCTION ENVIRONMENT SELECTED ⚠️")
+            print("!"*60)
+            print("")
+            print("You are about to work with the PRODUCTION environment.")
+            print("This will create REAL communities and users in the live system.")
+            print("")
+            print("!"*60)
+            
+            confirm = input("\nAre you sure you want to continue with PRODUCTION? (type 'yes' to confirm): ").strip().lower()
+            
+            if confirm != 'yes':
+                print("\n  ✗ Production not confirmed. Exiting.")
+                sys.exit(0)
+            print("\n  ✓ Confirmed: PRD (Production)")
+        else:
+            print(f"\n  ✓ Using environment: {env_name}")
+    else:
+        env_name = select_environment()
+    
+    # Load environment configuration
+    try:
+        load_environment_config(env_name)
+        print(f"  ✓ Configuration loaded for {env_name}")
+    except ValueError as e:
+        print(f"\nError: {str(e)}")
+        sys.exit(1)
+    
+    print("\n" + "="*60)
     print("Community Registration Processor")
     print("="*60)
+    print(f"Environment: {env_name}")
     print(f"File: {args.file}")
-    print(f"API URL: {os.getenv('APPSYNC_API_URL')}")
-    print(f"Region: {os.getenv('AWS_REGION', 'us-east-1')}")
+    print(f"API URL: {get_config('APPSYNC_API_URL')}")
+    print(f"Region: {get_config('AWS_REGION', 'us-east-1')}")
     print("="*60)
     
     try:

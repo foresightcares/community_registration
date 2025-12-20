@@ -7,12 +7,21 @@ This project processes Excel files containing community and caretaker informatio
 ## Setup (One-time)
 
 1. **Configure environment variables in `env.local`:**
-   ```bash
-   APPSYNC_API_URL=https://your-api-id.appsync-api.us-east-1.amazonaws.com/graphql
-   AWS_REGION=us-east-1
-   COGNITO_USER_POOL_ID=us-east-1_XXXXXXXXX  # REQUIRED: for user registration and authentication
-   COGNITO_CLIENT_ID=your-app-client-id  # REQUIRED: for authentication
-   COGNITO_IDENTITY_POOL_ID=us-east-1:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx  # Optional: for Identity Pool features
+
+   The configuration file uses INI-style sections for DEV and PRD environments:
+   
+   ```ini
+   [PRD]
+   APPSYNC_API_URL=https://your-prod-api.appsync-api.us-east-1.amazonaws.com/graphql
+   COGNITO_USER_POOL_ID=us-east-1_XXXXXXXXX
+   COGNITO_IDENTITY_POOL_ID=us-east-1:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+   COGNITO_CLIENT_ID=your-prod-app-client-id
+   
+   [DEV]
+   APPSYNC_API_URL=https://your-dev-api.appsync-api.us-east-1.amazonaws.com/graphql
+   COGNITO_USER_POOL_ID=us-east-1_YYYYYYYYY
+   COGNITO_IDENTITY_POOL_ID=us-east-1:yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
+   COGNITO_CLIENT_ID=your-dev-app-client-id
    ```
    
    **Important**: 
@@ -52,9 +61,21 @@ Your Excel file must have two sheets:
 ### Step 2: Run the Processor
 
 ```bash
-# Basic usage
+# Interactive mode - will prompt for environment selection (DEV or PRD)
 python process_registration.py path/to/your/file.xlsx
+
+# Specify environment directly via command line
+python process_registration.py path/to/your/file.xlsx --env DEV
+python process_registration.py path/to/your/file.xlsx --env PRD
+
+# Short form
+python process_registration.py path/to/your/file.xlsx -e DEV
 ```
+
+**Environment Selection:**
+- If no `--env` argument is provided, you'll be prompted to choose between DEV and PRD
+- **Production Warning**: When PRD is selected, you'll see a prominent warning and must type "yes" to confirm
+- This safety feature prevents accidental modifications to production data
 
 ### Step 3: Review Results
 
@@ -81,8 +102,22 @@ The script will:
 
 ```
 ============================================================
+ENVIRONMENT SELECTION
+============================================================
+
+Available environments:
+  1. DEV  - Development environment
+  2. PRD  - Production environment
+
+Select environment (1 for DEV, 2 for PRD): 1
+
+  ✓ Selected: DEV (Development)
+  ✓ Configuration loaded for DEV
+
+============================================================
 Community Registration Processor
 ============================================================
+Environment: DEV
 File: sample_registration.xlsx
 API URL: https://your-api-id.appsync-api.us-east-1.amazonaws.com/graphql
 Region: us-east-1
@@ -184,8 +219,13 @@ input CreateCaretakerInput {
 
 ## Troubleshooting
 
+### Error: "Environment 'XXX' not found in env.local"
+- Make sure `env.local` file exists and contains `[DEV]` and `[PRD]` sections
+- Check that the section names are spelled correctly (case-sensitive)
+- Ensure the file uses INI format with `[SECTION]` headers
+
 ### Error: "APPSYNC_API_URL must be set"
-- Make sure `env.local` file exists and contains `APPSYNC_API_URL`
+- Make sure `env.local` file exists and contains `APPSYNC_API_URL` in the selected environment section
 
 ### Error: AWS authentication failed / Unable to parse JWT token
 - **If using IAM authentication**: 
@@ -236,12 +276,37 @@ input CreateCaretakerInput {
 
 ## Advanced Usage
 
+### Command Line Options
+
+```bash
+# Show help
+python process_registration.py --help
+
+# Available options:
+#   file              Path to Excel file (required)
+#   --env, -e         Environment to use: DEV or PRD
+#   --verbose, -v     Enable verbose output for debugging
+
+# Examples:
+python process_registration.py data.xlsx                    # Interactive env selection
+python process_registration.py data.xlsx --env DEV          # Use DEV environment
+python process_registration.py data.xlsx -e PRD -v          # PRD with verbose output
+```
+
 ### Using in Your Own Scripts
 
 ```python
-from process_registration import create_appsync_client, create_community, create_caretaker
+from process_registration import (
+    load_environment_config,
+    create_appsync_client,
+    create_community,
+    create_caretaker
+)
 
-# Create client
+# Load environment configuration first
+load_environment_config('DEV')  # or 'PRD'
+
+# Create client (uses loaded configuration)
 client = create_appsync_client()
 
 # Create a community
