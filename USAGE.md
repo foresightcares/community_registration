@@ -22,22 +22,32 @@ This project processes Excel files containing community and caretaker informatio
    COGNITO_USER_POOL_ID=us-east-1_YYYYYYYYY
    COGNITO_IDENTITY_POOL_ID=us-east-1:yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
    COGNITO_CLIENT_ID=your-dev-app-client-id
+   AWS_PROFILE=your-aws-profile  # Optional: for --iam authentication
    ```
    
    **Important**: 
    - `COGNITO_USER_POOL_ID` is **required** for user registration and authentication
-   - `COGNITO_CLIENT_ID` is **required** for authentication (get this from Cognito Console → User Pools → Your Pool → App clients)
+   - `COGNITO_CLIENT_ID` is **required** for Cognito JWT authentication (default mode)
    - `COGNITO_IDENTITY_POOL_ID` is optional (only needed if using Cognito Identity Pool features)
-   - When you run the script, it will prompt for your username and password to authenticate with Cognito
+   - `AWS_PROFILE` is optional - specifies which profile from `~/.aws/credentials` to use with `--iam` flag
+   - When you run the script (without `--iam`), it will prompt for your username and password to authenticate with Cognito
    - The App Client must have `USER_PASSWORD_AUTH` authentication flow enabled
 
-2. **Configure AWS credentials** (choose one method):
-   - **Option A:** Use AWS CLI: `aws configure`
-   - **Option B:** Add to `env.local`:
-     ```bash
-     AWS_ACCESS_KEY_ID=your_access_key
-     AWS_SECRET_ACCESS_KEY=your_secret_key
-     ```
+2. **Configure AWS credentials** (for `--iam` authentication):
+   
+   The `--iam` flag reads credentials from `~/.aws/credentials`:
+   ```bash
+   # Configure default profile
+   aws configure
+   
+   # Or configure a named profile
+   aws configure --profile myprofile
+   ```
+   
+   Then optionally add to `env.local` to use a specific profile:
+   ```ini
+   AWS_PROFILE=myprofile
+   ```
 
 3. **Activate virtual environment:**
    ```bash
@@ -227,20 +237,51 @@ input CreateCaretakerInput {
 ### Error: "APPSYNC_API_URL must be set"
 - Make sure `env.local` file exists and contains `APPSYNC_API_URL` in the selected environment section
 
+### Error: UnauthorizedException / Unauthorized
+This error means authentication succeeded but authorization failed:
+
+1. **Check Cognito groups**: Run with `--verbose` to see JWT claims. Look for `cognito:groups`. 
+   If it shows `None`, your user may not be in the required Cognito group for the operation.
+
+2. **Try different auth methods**:
+   ```bash
+   # Try IAM authentication instead of Cognito JWT
+   python process_registration.py data.xlsx --env DEV --iam --verbose
+   
+   # Try adding Bearer prefix to Authorization header
+   python process_registration.py data.xlsx --env DEV --bearer --verbose
+   ```
+
+3. **Check AppSync authorization rules**:
+   - Go to AWS Console → AppSync → Your API → Schema
+   - Look for `@auth` directives on the mutation (e.g., `createCommunity`)
+   - Verify your user has the required permissions/group membership
+
+4. **Compare with AppSync Console**:
+   - Copy the GraphQL query/variables from the `--verbose` output
+   - Paste into AppSync Console → Queries
+   - Try running with different auth methods in the console
+
 ### Error: AWS authentication failed / Unable to parse JWT token
-- **If using IAM authentication**: 
-  - Verify AWS credentials are configured correctly
-  - Check that your AppSync API has IAM authentication enabled
+- **If using Cognito JWT (default)**:
+  - Verify `COGNITO_USER_POOL_ID` and `COGNITO_CLIENT_ID` are correct
+  - Check that your AppSync API has Cognito User Pool authentication enabled
+  - Ensure the App Client has `USER_PASSWORD_AUTH` flow enabled
+  
+- **If using IAM authentication (--iam flag)**:
+  - Verify AWS credentials exist in `~/.aws/credentials`
+  - Check `AWS_PROFILE` in `env.local` if using a non-default profile
   - Ensure your IAM user/role has `appsync:GraphQL` permission
-  - If IAM auth is not enabled, use API Key authentication instead
+  - Verify your AppSync API has IAM authentication enabled
+
 - **If using API Key authentication**:
   - Set `APPSYNC_API_KEY` in `env.local`
   - Ensure API Key authentication is enabled on your AppSync API
   - Verify the API key is correct and not expired
+
 - **To check your AppSync authentication settings**:
   - Go to AWS Console → AppSync → Your API → Settings
   - Check which authentication methods are enabled
-  - Enable IAM or API Key authentication if needed
 
 ### Error: File not found
 - Verify the Excel file path is correct
@@ -286,12 +327,52 @@ python process_registration.py --help
 #   file              Path to Excel file (required)
 #   --env, -e         Environment to use: DEV or PRD
 #   --verbose, -v     Enable verbose output for debugging
+#   --iam             Use IAM authentication instead of Cognito JWT
+#   --bearer          Add "Bearer" prefix to Authorization header
 
 # Examples:
 python process_registration.py data.xlsx                    # Interactive env selection
 python process_registration.py data.xlsx --env DEV          # Use DEV environment
 python process_registration.py data.xlsx -e PRD -v          # PRD with verbose output
+python process_registration.py data.xlsx -e DEV --iam       # Use IAM auth from ~/.aws/credentials
+python process_registration.py data.xlsx -e DEV --bearer    # Try Bearer prefix for auth
 ```
+
+### Authentication Methods
+
+#### Cognito JWT (Default)
+The default authentication method. Prompts for username/password at runtime:
+```bash
+python process_registration.py data.xlsx --env DEV
+```
+
+#### IAM Authentication
+Uses AWS credentials from `~/.aws/credentials`. Useful if your AppSync API uses IAM auth:
+```bash
+python process_registration.py data.xlsx --env DEV --iam
+```
+
+To use a specific AWS profile, add to your `env.local`:
+```ini
+[DEV]
+APPSYNC_API_URL=https://your-api.appsync-api.us-east-1.amazonaws.com/graphql
+AWS_PROFILE=your-profile-name
+```
+
+### Debugging GraphQL Errors
+
+Use `--verbose` to see detailed information:
+```bash
+python process_registration.py data.xlsx --env DEV --verbose
+```
+
+This shows:
+- Authentication method and credentials being used
+- JWT claims (user ID, email, Cognito groups)
+- Full GraphQL queries and variables (can be copied to AppSync Console)
+- Detailed error messages
+
+When a GraphQL operation fails, the script automatically prints the query and variables in a format you can copy directly to the AppSync Console to test manually.
 
 ### Using in Your Own Scripts
 

@@ -97,7 +97,7 @@ def print_graphql_for_console(operation_name: str, query_string: str, variables:
     print("─"*50 + "\n")
 
 
-def create_appsync_client(api_url: str = None, region: str = None, jwt_token: str = None, api_key: str = None):
+def create_appsync_client(api_url: str = None, region: str = None, jwt_token: str = None, api_key: str = None, verbose: bool = False, use_bearer_prefix: bool = False):
     """
     Create an authenticated GraphQL client for AWS AppSync
     
@@ -111,6 +111,7 @@ def create_appsync_client(api_url: str = None, region: str = None, jwt_token: st
         region: AWS region (defaults to env variable or 'us-east-1')
         jwt_token: Optional JWT token from Cognito User Pool authentication
         api_key: Optional API key for AppSync API Key authentication
+        verbose: If True, print detailed debugging information
     
     Returns:
         GQL Client instance
@@ -124,10 +125,45 @@ def create_appsync_client(api_url: str = None, region: str = None, jwt_token: st
     if region is None:
         region = get_config('AWS_REGION', 'us-east-1')
     
+    if verbose:
+        print(f"\n  [DEBUG] AppSync Client Configuration:")
+        print(f"    API URL: {api_url}")
+        print(f"    Region: {region}")
+        print(f"    JWT Token provided: {'Yes' if jwt_token else 'No'}")
+        print(f"    API Key provided: {'Yes' if api_key else 'No'}")
+        print(f"    APPSYNC_API_KEY env: {'Set' if get_config('APPSYNC_API_KEY') else 'Not set'}")
+        print(f"    AWS_PROFILE env: {get_config('AWS_PROFILE') or 'Not set (using default)'}")
+    
     # Priority 1: Use JWT token authentication (Cognito User Pool)
     if jwt_token:
+        # Determine auth header value
+        auth_header_value = f"Bearer {jwt_token}" if use_bearer_prefix else jwt_token
+        
+        if verbose:
+            print(f"    Auth method: JWT Token (Cognito)")
+            print(f"    Using Bearer prefix: {'Yes' if use_bearer_prefix else 'No'}")
+            print(f"    Token preview: {jwt_token[:50]}...")
+            # Decode and show JWT claims (without verification) for debugging
+            try:
+                import base64
+                import json
+                # JWT is base64 encoded: header.payload.signature
+                payload_b64 = jwt_token.split('.')[1]
+                # Add padding if needed
+                payload_b64 += '=' * (4 - len(payload_b64) % 4)
+                payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+                print(f"    JWT Claims:")
+                print(f"      - sub (user ID): {payload.get('sub', 'N/A')}")
+                print(f"      - email: {payload.get('email', 'N/A')}")
+                print(f"      - cognito:groups: {payload.get('cognito:groups', 'None')}")
+                print(f"      - token_use: {payload.get('token_use', 'N/A')}")
+                print(f"      - iss (issuer): {payload.get('iss', 'N/A')}")
+                print(f"      - exp: {payload.get('exp', 'N/A')}")
+            except Exception as e:
+                print(f"    Could not decode JWT: {e}")
+        
         headers = {
-            'Authorization': jwt_token
+            'Authorization': auth_header_value
         }
         transport = RequestsHTTPTransport(
             url=api_url,
@@ -137,6 +173,8 @@ def create_appsync_client(api_url: str = None, region: str = None, jwt_token: st
     # Priority 2: Check for API Key authentication
     elif api_key or get_config('APPSYNC_API_KEY'):
         api_key = api_key or get_config('APPSYNC_API_KEY')
+        if verbose:
+            print(f"    Auth method: API Key")
         headers = {
             'x-api-key': api_key
         }
@@ -149,21 +187,37 @@ def create_appsync_client(api_url: str = None, region: str = None, jwt_token: st
     else:
         aws_profile = get_config('AWS_PROFILE')
         
-        # Get AWS credentials
+        # Get AWS credentials from ~/.aws/credentials
         session_kwargs = {}
         if aws_profile:
             session_kwargs['profile_name'] = aws_profile
         
-        credentials = boto3.Session(**session_kwargs).get_credentials()
+        session = boto3.Session(**session_kwargs)
+        credentials = session.get_credentials()
+        
         if not credentials:
-            raise ValueError("AWS credentials not found. Please configure AWS credentials, set APPSYNC_API_KEY, or use Cognito JWT authentication.")
+            raise ValueError(
+                "AWS credentials not found in ~/.aws/credentials. "
+                "Please configure AWS credentials using 'aws configure' or set AWS_PROFILE in env.local."
+            )
+        
+        # Get the frozen credentials to access actual values
+        frozen_credentials = credentials.get_frozen_credentials()
+        
+        if verbose:
+            print(f"    Auth method: IAM (AWS Signature V4)")
+            print(f"    Credentials source: ~/.aws/credentials")
+            print(f"    AWS Profile: {aws_profile or 'default'}")
+            print(f"    Access Key ID: {frozen_credentials.access_key[:8]}..." if frozen_credentials.access_key else "    Access Key ID: None")
+            print(f"    Has Session Token: {'Yes' if frozen_credentials.token else 'No'}")
+            print(f"    Region: {region}")
         
         auth = AWS4Auth(
-            credentials.access_key,
-            credentials.secret_key,
+            frozen_credentials.access_key,
+            frozen_credentials.secret_key,
             region,
             'appsync',
-            session_token=credentials.token,
+            session_token=frozen_credentials.token,
         )
         
         # Create transport with AWS authentication
@@ -180,6 +234,9 @@ def create_appsync_client(api_url: str = None, region: str = None, jwt_token: st
         transport=transport,
         fetch_schema_from_transport=False,
     )
+    
+    if verbose:
+        print(f"    ✓ AppSync client created successfully\n")
     
     return client
 
@@ -253,69 +310,7 @@ def authenticate_cognito_user(user_pool_id: str, client_id: str, username: str, 
         if 'ChallengeName' in response:
             challenge_name = response['ChallengeName']
             if challenge_name == 'NEW_PASSWORD_REQUIRED':
-                print("\n" + "="*60)
-                print("PASSWORD CHANGE REQUIRED")
-                print("="*60)
-                print("Your account requires a password change.")
-                print("Please enter a new password.")
-                print("\nPassword requirements:")
-                print("  • Minimum 8 characters")
-                print("  • At least one uppercase letter")
-                print("  • At least one lowercase letter")
-                print("  • At least one number")
-                print("  • At least one special character (!@#$%^&*)")
-                print("="*60)
-                
-                # Prompt for new password
-                new_password = getpass.getpass("Enter new password: ")
-                if not new_password:
-                    raise Exception("New password cannot be empty")
-                
-                confirm_password = getpass.getpass("Confirm new password: ")
-                if new_password != confirm_password:
-                    raise Exception("Passwords do not match")
-                
-                # Get session from challenge response
-                session = response.get('Session')
-                
-                # Get required attributes from challenge parameters
-                challenge_params = response.get('ChallengeParameters', {})
-                user_attributes = challenge_params.get('userAttributes', '{}')
-                
-                # Respond to the NEW_PASSWORD_REQUIRED challenge
-                print("\n  Setting new password...")
-                try:
-                    challenge_response = cognito_idp_client.respond_to_auth_challenge(
-                        ClientId=client_id,
-                        ChallengeName='NEW_PASSWORD_REQUIRED',
-                        Session=session,
-                        ChallengeResponses={
-                            'USERNAME': username,
-                            'NEW_PASSWORD': new_password,
-                        }
-                    )
-                    
-                    # Check if there's another challenge
-                    if 'ChallengeName' in challenge_response:
-                        raise Exception(f"Additional challenge required: {challenge_response['ChallengeName']}. Please complete via Cognito console.")
-                    
-                    # Get the ID token from the successful response
-                    if 'AuthenticationResult' not in challenge_response:
-                        raise Exception("Password change response missing AuthenticationResult")
-                    
-                    id_token = challenge_response['AuthenticationResult']['IdToken']
-                    print(f"  ✓ Password changed successfully")
-                    print(f"  ✓ Successfully obtained JWT token")
-                    return id_token
-                    
-                except ClientError as challenge_error:
-                    error_code = challenge_error.response.get('Error', {}).get('Code', '')
-                    error_message = challenge_error.response.get('Error', {}).get('Message', '')
-                    
-                    if error_code == 'InvalidPasswordException':
-                        raise Exception(f"Password does not meet requirements: {error_message}")
-                    else:
-                        raise Exception(f"Failed to set new password: {error_code} - {error_message}")
+                raise Exception("New password required. Please change your password first using the Cognito console or mobile app.")
             else:
                 raise Exception(f"Authentication challenge required: {challenge_name}. Please complete the challenge first.")
         
@@ -500,112 +495,6 @@ def add_user_to_cognito(cognito_client, user_pool_id: str, email: str, first_nam
         return False
 
 
-def add_verified_user_to_cognito(cognito_client, user_pool_id: str, email: str, password: str, first_name: str, last_name: str, group_name: str) -> bool:
-    """
-    Add a user to Cognito User Pool with verified email and set a permanent password
-    This is used for community admin users where email should be pre-verified
-    
-    Args:
-        cognito_client: boto3 Cognito client
-        user_pool_id: Cognito User Pool ID
-        email: User email address (used as username)
-        password: Permanent password for the user
-        first_name: User first name
-        last_name: User last name
-        group_name: Cognito group name to assign user to
-    
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        # Create user in Cognito using email as username
-        # MessageAction='SUPPRESS' prevents sending welcome email
-        # email_verified is set to 'true' since this is a pre-verified account
-        print(f"    Creating verified user in Cognito User Pool...")
-        cognito_client.admin_create_user(
-            UserPoolId=user_pool_id,
-            Username=email,  # Email is used as username
-            UserAttributes=[
-                {'Name': 'email', 'Value': email},
-                {'Name': 'email_verified', 'Value': 'true'},  # Pre-verified email
-                {'Name': 'given_name', 'Value': first_name},
-                {'Name': 'family_name', 'Value': last_name},
-            ],
-            MessageAction='SUPPRESS'  # Don't send welcome email
-        )
-        print(f"    ✓ User created in Cognito")
-        
-        # Set permanent password for the user
-        print(f"    Setting permanent password...")
-        cognito_client.admin_set_user_password(
-            UserPoolId=user_pool_id,
-            Username=email,
-            Password=password,
-            Permanent=True  # Set as permanent password (user won't be forced to change)
-        )
-        print(f"    ✓ Password set")
-        
-        # Add user to group
-        print(f"    Adding user to group '{group_name}'...")
-        cognito_client.admin_add_user_to_group(
-            UserPoolId=user_pool_id,
-            Username=email,
-            GroupName=group_name
-        )
-        print(f"    ✓ User added to group")
-        
-        print(f"  ✓ Added verified user to Cognito and assigned to group '{group_name}'")
-        return True
-        
-    except ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code', '')
-        error_message = e.response.get('Error', {}).get('Message', '')
-        
-        if error_code == 'UsernameExistsException':
-            # User already exists, update attributes, set password, and add to group
-            try:
-                print(f"  User already exists in Cognito, updating and adding to group...")
-                # Update user attributes (set email_verified to true)
-                cognito_client.admin_update_user_attributes(
-                    UserPoolId=user_pool_id,
-                    Username=email,
-                    UserAttributes=[
-                        {'Name': 'email_verified', 'Value': 'true'},  # Pre-verified email
-                        {'Name': 'given_name', 'Value': first_name},
-                        {'Name': 'family_name', 'Value': last_name},
-                    ]
-                )
-                
-                # Set permanent password
-                cognito_client.admin_set_user_password(
-                    UserPoolId=user_pool_id,
-                    Username=email,
-                    Password=password,
-                    Permanent=True
-                )
-                
-                # Add user to group
-                cognito_client.admin_add_user_to_group(
-                    UserPoolId=user_pool_id,
-                    Username=email,
-                    GroupName=group_name
-                )
-                
-                print(f"  ✓ User already exists in Cognito, updated and added to group '{group_name}'")
-                return True
-            except ClientError as update_error:
-                update_error_code = update_error.response.get('Error', {}).get('Code', '')
-                update_error_message = update_error.response.get('Error', {}).get('Message', '')
-                print(f"  ✗ Error updating existing user: {update_error_code} - {update_error_message}")
-                return False
-        else:
-            print(f"  ✗ Error creating verified user: {error_code} - {error_message}")
-            return False
-    except Exception as e:
-        print(f"  ✗ Exception while adding verified user to Cognito: {str(e)}")
-        return False
-
-
 def read_community_data(file_path: str) -> List[Dict]:
     """
     Read community data from Excel file
@@ -762,238 +651,6 @@ def update_excel_with_community_id(file_path: str, community_id: str) -> None:
         print(f"  ⚠ Warning: Could not update Excel file with CommunityId: {str(e)}")
 
 
-def check_community_group_exists(client: Client, cognito_client, user_pool_id: str, community_email: str, community_name: str, verbose: bool = False) -> Tuple[bool, str]:
-    """
-    Check if a community group already exists in Cognito by:
-    1. Querying GraphQL to see if a community with the same email exists
-    2. If found, checking if the corresponding Cognito group exists
-    
-    Args:
-        client: GraphQL client
-        cognito_client: boto3 Cognito client
-        user_pool_id: Cognito User Pool ID
-        community_email: Community email address
-        community_name: Community name
-        verbose: If True, print detailed debugging information
-    
-    Returns:
-        Tuple of (group_exists: bool, group_name: str)
-    """
-    try:
-        # First, try to find if a community with this email exists via GraphQL
-        # Query all communities and check for matching email
-        query_string = """
-            query ListCommunities($limit: Int) {
-                listAllCommunities(limit: $limit) {
-                    items {
-                        id
-                        name
-                        email
-                    }
-                }
-            }
-        """
-        query = gql(query_string)
-        variables = {"limit": 1000}
-        
-        if verbose:
-            print_graphql_for_console("CHECK COMMUNITY GROUP EXISTS", query_string, variables)
-        
-        try:
-            result = client.execute(query, variable_values=variables)
-            communities = result.get('listAllCommunities', {}).get('items', [])
-            
-            # Check if any community has the same email
-            for community in communities:
-                if community.get('email', '').lower() == community_email.lower():
-                    community_id = community.get('id')
-                    if community_id:
-                        # Check if the corresponding group exists
-                        group_name = f"community-{community_id}"
-                        try:
-                            cognito_client.get_group(
-                                GroupName=group_name,
-                                UserPoolId=user_pool_id
-                            )
-                            return True, group_name
-                        except ClientError as e:
-                            error_code = e.response.get('Error', {}).get('Code', '')
-                            if error_code == 'ResourceNotFoundException':
-                                # Community exists but group doesn't - this is unusual but not a blocker
-                                pass
-                            else:
-                                # Other error - log but continue
-                                print(f"  ⚠ Warning: Error checking group '{group_name}': {error_code}")
-        except Exception as e:
-            # If GraphQL query fails, fall back to listing groups
-            print(f"  ⚠ Warning: Could not query GraphQL for communities: {str(e)}")
-            print(f"  Falling back to checking Cognito groups...")
-        
-        # Fallback: List all groups and check descriptions
-        try:
-            response = cognito_client.list_groups(UserPoolId=user_pool_id)
-            groups = response.get('Groups', [])
-            
-            # Check if any groups match the community pattern (community-*)
-            community_groups = [g for g in groups if g['GroupName'].startswith('community-')]
-            
-            if community_groups:
-                # Check group descriptions to see if any match this community email or name
-                for group in community_groups:
-                    description = group.get('Description', '')
-                    if (community_email.lower() in description.lower() or 
-                        community_name.lower() in description.lower()):
-                        return True, group['GroupName']
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', '')
-            error_message = e.response.get('Error', {}).get('Message', '')
-            if error_code == 'AccessDeniedException':
-                print(f"  ⚠ Warning: Cannot list Cognito groups (access denied). Skipping group check.")
-            else:
-                print(f"  ⚠ Warning: Error listing Cognito groups: {error_code} - {error_message}")
-        except Exception as e:
-            print(f"  ⚠ Warning: Unexpected error checking Cognito groups: {str(e)}")
-        
-        return False, ""
-        
-    except Exception as e:
-        print(f"  ⚠ Warning: Unexpected error checking community group: {str(e)}")
-        return False, ""
-
-
-def check_users_exist_in_cognito(cognito_client, user_pool_id: str, emails: List[str]) -> Tuple[bool, List[str]]:
-    """
-    Check if any of the provided emails already exist in Cognito User Pool
-    
-    Args:
-        cognito_client: boto3 Cognito client
-        user_pool_id: Cognito User Pool ID
-        emails: List of email addresses to check
-    
-    Returns:
-        Tuple of (users_exist: bool, existing_emails: List[str])
-    """
-    existing_emails = []
-    
-    for email in emails:
-        if not email:
-            continue
-        
-        try:
-            # Try to get the user by username (email)
-            cognito_client.admin_get_user(
-                UserPoolId=user_pool_id,
-                Username=email
-            )
-            # If no exception, user exists
-            existing_emails.append(email)
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', '')
-            if error_code == 'UserNotFoundException':
-                # User doesn't exist - this is fine
-                pass
-            else:
-                # Other error - log but don't fail the check
-                print(f"  ⚠ Warning: Error checking user '{email}' in Cognito: {error_code}")
-        except Exception as e:
-            # Unexpected error - log but don't fail the check
-            print(f"  ⚠ Warning: Unexpected error checking user '{email}' in Cognito: {str(e)}")
-    
-    return len(existing_emails) > 0, existing_emails
-
-
-def check_excel_already_processed(file_path: str) -> Tuple[bool, str]:
-    """
-    Check if the Excel file has already been processed
-    
-    Args:
-        file_path: Path to the Excel file
-    
-    Returns:
-        Tuple of (is_processed: bool, reason: str)
-    """
-    try:
-        wb = openpyxl.load_workbook(file_path)
-        
-        # Check 1: Admin Credentials sheet exists
-        if 'Admin Credentials' in wb.sheetnames:
-            ws_admin = wb['Admin Credentials']
-            # Check if it has data (at least header and one data row)
-            if ws_admin.max_row >= 2:
-                admin_email = ws_admin.cell(row=2, column=1).value
-                if admin_email:
-                    return True, f"Admin Credentials sheet already exists with email: {admin_email}"
-        
-        # Check 2: CommunityId column exists and has values in Users sheet
-        if 'Users' in wb.sheetnames:
-            ws_users = wb['Users']
-            headers = [cell.value for cell in ws_users[1]]
-            
-            # Find CommunityId column
-            community_id_col_idx = None
-            for idx, header in enumerate(headers):
-                if header == 'CommunityId':
-                    community_id_col_idx = idx + 1
-                    break
-            
-            if community_id_col_idx:
-                # Check if any row has a CommunityId value
-                for row_idx in range(2, ws_users.max_row + 1):
-                    community_id_value = ws_users.cell(row=row_idx, column=community_id_col_idx).value
-                    if community_id_value:
-                        return True, f"CommunityId already exists in Users sheet: {community_id_value}"
-        
-        return False, ""
-        
-    except Exception as e:
-        # If we can't read the file, assume it's not processed (let other errors surface)
-        return False, f"Could not check file status: {str(e)}"
-
-
-def add_admin_credentials_to_excel(file_path: str, admin_email: str, admin_password: str) -> None:
-    """
-    Add a new sheet to the Excel file with admin username (email) and password
-    
-    Args:
-        file_path: Path to the Excel file
-        admin_email: Admin user email address
-        admin_password: Admin user password
-    """
-    try:
-        wb = openpyxl.load_workbook(file_path)
-        
-        # Remove existing Admin Credentials sheet if it exists
-        if 'Admin Credentials' in wb.sheetnames:
-            wb.remove(wb['Admin Credentials'])
-        
-        # Create new sheet
-        ws = wb.create_sheet('Admin Credentials')
-        
-        # Add headers
-        ws.cell(row=1, column=1, value='Username (Email)')
-        ws.cell(row=1, column=2, value='Password')
-        
-        # Add data
-        ws.cell(row=2, column=1, value=admin_email)
-        ws.cell(row=2, column=2, value=admin_password)
-        
-        # Make headers bold (optional formatting)
-        from openpyxl.styles import Font
-        bold_font = Font(bold=True)
-        ws.cell(row=1, column=1).font = bold_font
-        ws.cell(row=1, column=2).font = bold_font
-        
-        # Auto-adjust column widths
-        ws.column_dimensions['A'].width = max(len('Username (Email)'), len(admin_email)) + 2
-        ws.column_dimensions['B'].width = max(len('Password'), len(admin_password)) + 2
-        
-        wb.save(file_path)
-        print(f"  ✓ Added admin credentials to Excel file (sheet: 'Admin Credentials')")
-    except Exception as e:
-        print(f"  ✗ Error adding admin credentials to Excel file: {str(e)}")
-        raise
-
-
 def create_community(client: Client, community_data: Dict, verbose: bool = False) -> Optional[Dict]:
     """
     Create a community using GraphQL mutation
@@ -1031,9 +688,6 @@ def create_community(client: Client, community_data: Dict, verbose: bool = False
     
     if verbose:
         print_graphql_for_console("CREATE COMMUNITY", mutation_string, variables)
-        print(f"\n  [VERBOSE] GraphQL Mutation:")
-        print(f"    Mutation: createCommunity")
-        print(f"    Input data: {community_data}")
     
     try:
         if verbose:
@@ -1053,7 +707,7 @@ def create_community(client: Client, community_data: Dict, verbose: bool = False
         
         print(f"Error creating community '{community_data.get('name')}': {error_details}")
         
-        # Always print GraphQL debug info on error (helps with debugging)
+        # Always print GraphQL debug on error so user can test in console
         print_graphql_for_console("CREATE COMMUNITY (FAILED)", mutation_string, variables)
         
         if verbose:
@@ -1064,7 +718,6 @@ def create_community(client: Client, community_data: Dict, verbose: bool = False
                 print(f"    GraphQL errors: {e.errors}")
             if hasattr(e, 'response'):
                 print(f"    Response: {e.response}")
-            print(f"    Input data that failed: {community_data}")
             import traceback
             print(f"    Traceback:")
             traceback.print_exc()
@@ -1072,19 +725,18 @@ def create_community(client: Client, community_data: Dict, verbose: bool = False
         return None
 
 
-def verify_caretaker_created(client: Client, email: str, verbose: bool = False) -> bool:
+def verify_caretaker_created(client: Client, email: str) -> bool:
     """
     Verify that a caretaker was created correctly by querying getUserByEmail
     
     Args:
         client: GraphQL client
         email: Email address of the caretaker to verify
-        verbose: If True, print detailed debugging information
     
     Returns:
         True if caretaker is found, False otherwise
     """
-    query_string = """
+    query = gql("""
         query GetUserByEmail($email: String!, $role: String!) {
             getUserByEmail(email: $email, role: $role) {
                 id
@@ -1096,24 +748,17 @@ def verify_caretaker_created(client: Client, email: str, verbose: bool = False) 
                 isActive
             }
         }
-    """
-    query = gql(query_string)
-    variables = {
-        'email': email,
-        'role': 'CARETAKER'
-    }
-    
-    if verbose:
-        print_graphql_for_console("VERIFY CARETAKER", query_string, variables)
+    """)
     
     try:
-        result = client.execute(query, variable_values=variables)
+        result = client.execute(query, variable_values={
+            'email': email,
+            'role': 'CARETAKER'
+        })
         users = result.get('getUserByEmail', [])
         return len(users) > 0
     except Exception as e:
         print(f"  ⚠ Verification query error: {str(e)}")
-        # Print debug info on error
-        print_graphql_for_console("VERIFY CARETAKER (FAILED)", query_string, variables)
         return False
 
 
@@ -1149,10 +794,6 @@ def create_caretaker(client: Client, caretaker_data: Dict, verbose: bool = False
     
     if verbose:
         print_graphql_for_console("CREATE CARETAKER", mutation_string, variables)
-        print(f"\n  [VERBOSE] GraphQL Mutation:")
-        print(f"    Mutation: createCommunityCaretaker")
-        print(f"    Input data: {caretaker_data}")
-        print(f"    Community ID: {caretaker_data.get('communityId', 'NOT SET')}")
     
     try:
         if verbose:
@@ -1172,7 +813,7 @@ def create_caretaker(client: Client, caretaker_data: Dict, verbose: bool = False
         
         print(f"Error creating caretaker '{caretaker_data.get('firstName')} {caretaker_data.get('lastName')}': {error_details}")
         
-        # Always print GraphQL debug info on error (helps with debugging)
+        # Always print GraphQL debug on error so user can test in console
         print_graphql_for_console("CREATE CARETAKER (FAILED)", mutation_string, variables)
         
         if verbose:
@@ -1183,7 +824,6 @@ def create_caretaker(client: Client, caretaker_data: Dict, verbose: bool = False
                 print(f"    GraphQL errors: {e.errors}")
             if hasattr(e, 'response'):
                 print(f"    Response: {e.response}")
-            print(f"    Input data that failed: {caretaker_data}")
             import traceback
             print(f"    Traceback:")
             traceback.print_exc()
@@ -1214,21 +854,24 @@ def print_progress_header(phase: str, step: int, total_steps: int, description: 
     print("="*60)
 
 
-def process_excel_file(file_path: str, verbose: bool = False) -> Dict:
+def process_excel_file(file_path: str, verbose: bool = False, use_iam: bool = False, use_bearer: bool = False) -> Dict:
     """
     Process the entire Excel file and create communities and caretakers
     
     Args:
         file_path: Path to the Excel file
+        verbose: If True, print detailed debugging information
+        use_iam: If True, use IAM authentication instead of Cognito JWT
+        use_bearer: If True, add "Bearer" prefix to Authorization header
     
     Returns:
         Dictionary with summary of created records
     """
     # Define total steps for progress tracking
     # Step 1: Reading data, Step 2: Creating community, Step 3: Creating caretakers
-    TOTAL_STEPS = 4
+    TOTAL_STEPS = 3
     
-    # Authenticate with Cognito User Pool to get JWT token for GraphQL
+    # Cognito User Pool ID is always needed for user management
     cognito_user_pool_id = get_config('COGNITO_USER_POOL_ID')
     cognito_client_id = get_config('COGNITO_CLIENT_ID')
     
@@ -1236,51 +879,87 @@ def process_excel_file(file_path: str, verbose: bool = False) -> Dict:
         print("\n" + "="*60)
         print("ERROR: COGNITO_USER_POOL_ID is required")
         print("="*60)
-        print("Cognito User Pool ID is required for authentication and user registration.")
-        print("Please set COGNITO_USER_POOL_ID in your env.local file.")
+        print("Cognito User Pool ID is required for user registration.")
+        print("Please set COGNITO_USER_POOL_ID in your .env file.")
         sys.exit(1)
     
-    if not cognito_client_id:
-        print("\n" + "="*60)
-        print("ERROR: COGNITO_CLIENT_ID is required")
+    # Create GraphQL client based on auth mode
+    if use_iam:
+        # Use IAM authentication (AWS credentials from ~/.aws/credentials)
         print("="*60)
-        print("Cognito App Client ID is required for authentication.")
-        print("Please set COGNITO_CLIENT_ID in your env.local file.")
-        print("You can find this in: Cognito Console → User Pools → Your Pool → App clients")
-        sys.exit(1)
-    
-    # Prompt for username and password
-    print("="*60)
-    print("Cognito Authentication Required")
-    print("="*60)
-    print("Enter your credentials to authenticate with Cognito")
-    print("(This is for GraphQL API access)")
-    print("="*60)
-    username = input("Enter your username (email): ").strip()
-    if not username:
-        print("ERROR: Username cannot be empty")
-        sys.exit(1)
-    
-    password = getpass.getpass("Enter your password: ")
-    if not password:
-        print("ERROR: Password cannot be empty")
-        sys.exit(1)
-    
-    print("\nAuthenticating with Cognito...")
-    try:
-        jwt_token = authenticate_cognito_user(
-            cognito_user_pool_id,
-            cognito_client_id,
-            username,
-            password
-        )
-        print("  ✓ Authentication successful")
-    except Exception as e:
-        print(f"  ✗ Authentication failed: {str(e)}")
-        sys.exit(1)
-    
-    # Create GraphQL client with JWT token
-    client = create_appsync_client(jwt_token=jwt_token)
+        print("Using IAM Authentication")
+        print("="*60)
+        aws_profile = get_config('AWS_PROFILE')
+        print(f"Credentials source: ~/.aws/credentials")
+        print(f"AWS Profile: {aws_profile or 'default'}")
+        
+        # Verify credentials exist before proceeding
+        session_kwargs = {}
+        if aws_profile:
+            session_kwargs['profile_name'] = aws_profile
+        session = boto3.Session(**session_kwargs)
+        credentials = session.get_credentials()
+        if not credentials:
+            print("\n" + "="*60)
+            print("ERROR: AWS credentials not found")
+            print("="*60)
+            print("Could not find credentials in ~/.aws/credentials")
+            print(f"Looking for profile: {aws_profile or 'default'}")
+            print("\nTo configure AWS credentials, run:")
+            print("  aws configure")
+            print("\nOr specify a different profile in env.local:")
+            print("  AWS_PROFILE=your-profile-name")
+            sys.exit(1)
+        
+        frozen_creds = credentials.get_frozen_credentials()
+        print(f"Access Key ID: {frozen_creds.access_key[:8]}...")
+        print("="*60)
+        
+        # Create GraphQL client with IAM auth (no JWT token)
+        client = create_appsync_client(verbose=verbose)
+    else:
+        # Use Cognito JWT authentication
+        if not cognito_client_id:
+            print("\n" + "="*60)
+            print("ERROR: COGNITO_CLIENT_ID is required")
+            print("="*60)
+            print("Cognito App Client ID is required for JWT authentication.")
+            print("Please set COGNITO_CLIENT_ID in your .env file.")
+            print("Or use --iam flag to use IAM authentication instead.")
+            sys.exit(1)
+        
+        # Prompt for username and password
+        print("="*60)
+        print("Cognito Authentication Required")
+        print("="*60)
+        print("Enter your credentials to authenticate with Cognito")
+        print("(This is for GraphQL API access)")
+        print("="*60)
+        username = input("Enter your username (email): ").strip()
+        if not username:
+            print("ERROR: Username cannot be empty")
+            sys.exit(1)
+        
+        password = getpass.getpass("Enter your password: ")
+        if not password:
+            print("ERROR: Password cannot be empty")
+            sys.exit(1)
+        
+        print("\nAuthenticating with Cognito...")
+        try:
+            jwt_token = authenticate_cognito_user(
+                cognito_user_pool_id,
+                cognito_client_id,
+                username,
+                password
+            )
+            print("  ✓ Authentication successful")
+        except Exception as e:
+            print(f"  ✗ Authentication failed: {str(e)}")
+            sys.exit(1)
+        
+        # Create GraphQL client with JWT token
+        client = create_appsync_client(jwt_token=jwt_token, verbose=verbose, use_bearer_prefix=use_bearer)
     
     # Initialize Cognito client (REQUIRED)
     try:
@@ -1298,99 +977,8 @@ def process_excel_file(file_path: str, verbose: bool = False) -> Dict:
     
     # Step 1: Read data from Excel
     print_progress_header("Reading Excel File", 1, TOTAL_STEPS, "Extracting community and caretaker data...")
-    
-    # Guard: Check if file has already been processed
-    is_processed, reason = check_excel_already_processed(file_path)
-    if is_processed:
-        print("\n" + "="*60)
-        print("ERROR: Excel file has already been processed")
-        print("="*60)
-        print(f"Reason: {reason}")
-        print("\nThis file appears to have already been processed.")
-        print("To prevent duplicate community/caretaker creation, processing is blocked.")
-        print("\nIf you need to reprocess this file:")
-        print("  1. Remove the 'Admin Credentials' sheet")
-        print("  2. Clear the 'CommunityId' column in the 'Users' sheet")
-        print("  3. Run the script again")
-        sys.exit(1)
-    
     communities = read_community_data(file_path)
     caretakers = read_caretaker_data(file_path)
-    
-    # Guard: Check if users already exist in Cognito
-    print("  Checking if users already exist in Cognito...")
-    emails_to_check = []
-    
-    # Collect caretaker emails
-    for caretaker in caretakers:
-        email = caretaker.get('email')
-        if email:
-            emails_to_check.append(email)
-    
-    # Generate and add community admin email
-    if communities:
-        community_name = communities[0].get('name', 'Community')
-        sanitized_name = ''.join(c.lower() if c.isalnum() else '' for c in community_name)
-        if not sanitized_name:
-            sanitized_name = 'community'
-        community_admin_email = f"{sanitized_name}@foresightcares.com"
-        emails_to_check.append(community_admin_email)
-    
-    # Check Cognito for existing users
-    if emails_to_check:
-        users_exist, existing_emails = check_users_exist_in_cognito(
-            cognito_client,
-            cognito_user_pool_id,
-            emails_to_check
-        )
-        
-        if users_exist:
-            print("\n" + "="*60)
-            print("ERROR: Users already exist in Cognito")
-            print("="*60)
-            print("The following email(s) are already registered in Cognito:")
-            for email in existing_emails:
-                print(f"  - {email}")
-            print("\nTo prevent duplicate user creation, processing is blocked.")
-            print("\nIf you need to reprocess this file:")
-            print("  1. Remove the users from Cognito User Pool")
-            print("  2. Or use a different Excel file with different email addresses")
-            sys.exit(1)
-    
-    print("  ✓ No existing users found in Cognito")
-    
-    # Guard: Check if community group already exists in Cognito
-    if communities:
-        community_data = communities[0]
-        community_email = community_data.get('email')
-        community_name = community_data.get('name', 'Community')
-        if community_email:
-            print("  Checking if community group already exists in Cognito...")
-            group_exists, group_name = check_community_group_exists(
-                client,
-                cognito_client,
-                cognito_user_pool_id,
-                community_email,
-                community_name,
-                verbose=verbose
-            )
-            
-            if group_exists:
-                print("\n" + "="*60)
-                print("ERROR: Community group already exists in Cognito")
-                print("="*60)
-                print(f"Found existing group: {group_name}")
-                print(f"Community email: {community_email}")
-                print("\nThis indicates that a community with this email may have already been processed.")
-                print("To prevent duplicate community creation, processing is blocked.")
-                print("\nIf you need to reprocess this file:")
-                print("  1. Verify that the community and group should be removed")
-                print("  2. Remove the community from GraphQL/DynamoDB")
-                print("  3. Remove the group from Cognito User Pool")
-                print("  4. Run the script again")
-                sys.exit(1)
-            
-            print("  ✓ No existing community group found in Cognito")
     
     # Validate that there is exactly one community
     if len(communities) == 0:
@@ -1512,7 +1100,7 @@ def process_excel_file(file_path: str, verbose: bool = False) -> Dict:
                 sys.exit(1)
             
             print(f"  Verifying caretaker creation...")
-            is_verified = verify_caretaker_created(client, caretaker_email, verbose=verbose)
+            is_verified = verify_caretaker_created(client, caretaker_email)
             if is_verified:
                 print(f"  ✓ Verification successful: Caretaker found in system")
             else:
@@ -1565,120 +1153,11 @@ def process_excel_file(file_path: str, verbose: bool = False) -> Dict:
         else:
             print(f"  ✗ Failed to create")
     
-    # Step 4: Create community admin user with verified email
-    print_progress_header("Creating Community Admin User", 4, TOTAL_STEPS, "Setting up community admin account...")
-    
-    # Prompt for default password
-    print("\nPlease enter the default password for the community admin user:")
-    default_password = getpass.getpass("Password: ")
-    if not default_password:
-        print("\n" + "="*60)
-        print("ERROR: Password cannot be empty")
-        print("="*60)
-        sys.exit(1)
-    
-    # Confirm password
-    password_confirm = getpass.getpass("Confirm password: ")
-    if default_password != password_confirm:
-        print("\n" + "="*60)
-        print("ERROR: Passwords do not match")
-        print("="*60)
-        sys.exit(1)
-    
-    # Sanitize community name for email (remove spaces, special chars, convert to lowercase)
-    community_name = community_data.get('name', 'Community')
-    sanitized_name = ''.join(c.lower() if c.isalnum() else '' for c in community_name)
-    if not sanitized_name:
-        sanitized_name = 'community'  # Fallback if name has no alphanumeric chars
-    
-    # Create email in format: CommunityName@foresightcares.com
-    community_email = f"{sanitized_name}@foresightcares.com"
-    
-    print(f"\nCreating community admin user:")
-    print(f"  Email: {community_email}")
-    print(f"  Community: {community_name}")
-    
-    if not cognito_group_name:
-        print(f"  ✗ Cannot add to Cognito: group name not set")
-        print("\n" + "="*60)
-        print("ERROR: Cognito group name is required")
-        print("="*60)
-        sys.exit(1)
-    
-    try:
-        cognito_success = add_verified_user_to_cognito(
-            cognito_client,
-            cognito_user_pool_id,
-            community_email,
-            default_password,
-            community_name,  # Use community name as first name
-            'Admin',  # Use 'Admin' as last name
-            cognito_group_name
-        )
-        
-        if not cognito_success:
-            print(f"  ✗ Failed to create community admin user in Cognito")
-            print("\n" + "="*60)
-            print("ERROR: Community admin user creation failed")
-            print("="*60)
-            print(f"Email: {community_email}")
-            print("User authentication will not work. Cannot proceed.")
-            sys.exit(1)
-        
-        print(f"  ✓ Community admin user created successfully in Cognito")
-        
-        # Create caretaker record in GraphQL for admin user
-        print(f"  Creating caretaker record for admin user...")
-        admin_caretaker_data = {
-            'firstName': community_name,
-            'lastName': 'Admin',
-            'email': community_email,
-            'communityId': community_id
-        }
-        
-        if verbose:
-            print(f"\n  [VERBOSE] Admin Caretaker Data:")
-            print(f"    {admin_caretaker_data}")
-        
-        admin_caretaker_result = create_caretaker(client, admin_caretaker_data, verbose=verbose)
-        
-        if admin_caretaker_result:
-            print(f"  ✓ Admin caretaker record created successfully with ID: {admin_caretaker_result['id']}")
-            
-            # Verify admin caretaker was created correctly
-            print(f"  Verifying admin caretaker creation...")
-            is_verified = verify_caretaker_created(client, community_email, verbose=verbose)
-            if is_verified:
-                print(f"  ✓ Verification successful: Admin caretaker found in system")
-            else:
-                print(f"  ⚠ ALARM: Verification failed! Admin caretaker (email: {community_email}) was not found after creation.")
-                print(f"  ⚠ The admin caretaker may not have been created correctly. Please verify manually.")
-        else:
-            print(f"  ✗ Failed to create admin caretaker record")
-            print("\n" + "="*60)
-            print("ERROR: Admin caretaker creation failed")
-            print("="*60)
-            print(f"Email: {community_email}")
-            print("The admin user was created in Cognito but failed to create caretaker record in GraphQL.")
-            print("Cannot proceed.")
-            sys.exit(1)
-        
-        # Add admin credentials to Excel file
-        try:
-            add_admin_credentials_to_excel(file_path, community_email, default_password)
-        except Exception as e:
-            print(f"  ⚠ Warning: Could not add admin credentials to Excel file: {str(e)}")
-            # Don't exit - this is not critical for the main process
-        
-    except Exception as e:
-        print(f"  ✗ Exception while creating community admin user: {str(e)}")
-        print("\n" + "="*60)
-        print("ERROR: Community admin user creation failed")
-        print("="*60)
-        print(f"Email: {community_email}")
-        print(f"Error: {str(e)}")
-        print("User authentication will not work. Cannot proceed.")
-        sys.exit(1)
+    # Show completion progress
+    print("\n" + "="*60)
+    print("OVERALL PROGRESS: [" + "█" * 40 + "] 100%")
+    print("Phase 3/3: Creating Caretakers - COMPLETE")
+    print("="*60)
     
     # Summary
     summary = {
@@ -1729,11 +1208,6 @@ def select_environment() -> str:
             print("You are about to work with the PRODUCTION environment.")
             print("This will create REAL communities and users in the live system.")
             print("")
-            print("Changes made in production:")
-            print("  • Cannot be easily undone")
-            print("  • Will affect real users")
-            print("  • May send emails to actual users")
-            print("")
             print("!"*60)
             
             confirm = input("\nAre you sure you want to continue with PRODUCTION? (type 'yes' to confirm): ").strip().lower()
@@ -1755,12 +1229,18 @@ def main():
     parser.add_argument('file', help='Path to Excel file')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose output for debugging')
+    parser.add_argument('--iam', action='store_true',
+                       help='Use IAM authentication instead of Cognito JWT (use this if you have AWS credentials configured)')
+    parser.add_argument('--bearer', action='store_true',
+                       help='Add "Bearer" prefix to Authorization header (try this if getting Unauthorized errors)')
     parser.add_argument('--env', '-e', choices=['DEV', 'PRD', 'dev', 'prd'],
                        help='Environment to use (DEV or PRD). If not specified, will prompt for selection.')
     
     args = parser.parse_args()
     
     verbose = args.verbose
+    use_iam = args.iam
+    use_bearer = args.bearer
     
     if not os.path.exists(args.file):
         print(f"Error: File '{args.file}' not found")
@@ -1806,10 +1286,13 @@ def main():
     print(f"File: {args.file}")
     print(f"API URL: {get_config('APPSYNC_API_URL')}")
     print(f"Region: {get_config('AWS_REGION', 'us-east-1')}")
+    print(f"Auth Mode: {'IAM' if use_iam else 'Cognito JWT'}")
+    if use_bearer:
+        print(f"Bearer Prefix: Enabled")
     print("="*60)
     
     try:
-        summary = process_excel_file(args.file, verbose=verbose)
+        summary = process_excel_file(args.file, verbose=verbose, use_iam=use_iam, use_bearer=use_bearer)
         
         # Print summary
         print("\n" + "="*60)

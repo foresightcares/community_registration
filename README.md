@@ -176,9 +176,21 @@ See `example_graphql.py` for complete examples of:
    # Or specify environment directly
    python process_registration.py input_sample/Community_Registration.xlsx --env DEV
    python process_registration.py input_sample/Community_Registration.xlsx --env PRD
+   
+   # Use IAM authentication (from ~/.aws/credentials) instead of Cognito JWT
+   python process_registration.py input_sample/Community_Registration.xlsx --env DEV --iam
+   
+   # Enable verbose output for debugging
+   python process_registration.py input_sample/Community_Registration.xlsx --env DEV --verbose
    ```
    
    The processor uses `createCommunityCaretaker` mutation for all caretaker creation.
+   
+   **Command Line Options:**
+   - `--env, -e`: Environment to use (DEV or PRD). If not specified, prompts for selection.
+   - `--iam`: Use IAM authentication from `~/.aws/credentials` instead of Cognito JWT
+   - `--bearer`: Add "Bearer" prefix to Authorization header (troubleshooting option)
+   - `--verbose, -v`: Enable verbose output showing auth details and GraphQL queries
    
    **Environment Selection:**
    - If no `--env` argument is provided, you'll be prompted to select DEV or PRD
@@ -246,35 +258,92 @@ This creates `sample_registration.xlsx` with example communities and caretakers.
 | `APPSYNC_API_URL` | Yes | - | AWS AppSync GraphQL endpoint URL |
 | `AWS_REGION` | No | `us-east-1` | AWS region for your AppSync API |
 | `COGNITO_USER_POOL_ID` | **Yes** | - | AWS Cognito User Pool ID for user registration and authentication |
-| `COGNITO_CLIENT_ID` | **Yes** | - | Cognito User Pool App Client ID for authentication |
+| `COGNITO_CLIENT_ID` | **Yes**¹ | - | Cognito User Pool App Client ID for authentication |
 | `COGNITO_IDENTITY_POOL_ID` | No | - | Cognito Identity Pool ID (optional, for Identity Pool features) |
-| `APPSYNC_API_KEY` | No | - | API Key for AppSync (fallback if not using Cognito JWT) |
-| `AWS_ACCESS_KEY_ID` | No | - | AWS access key (if not using ~/.aws/credentials) |
-| `AWS_SECRET_ACCESS_KEY` | No | - | AWS secret key (if not using ~/.aws/credentials) |
-| `AWS_SESSION_TOKEN` | No | - | AWS session token (for temporary credentials) |
-| `AWS_PROFILE` | No | `default` | AWS profile name from ~/.aws/credentials |
+| `APPSYNC_API_KEY` | No | - | API Key for AppSync (if using API Key authentication) |
+| `AWS_PROFILE` | No | `default` | AWS profile name from `~/.aws/credentials` (used with `--iam` flag) |
+
+¹ Required only when using Cognito JWT authentication (default). Not required when using `--iam` flag.
+
+### AWS Credentials for IAM Authentication
+
+When using the `--iam` flag, credentials are read from `~/.aws/credentials`:
+
+```ini
+# ~/.aws/credentials
+[default]
+aws_access_key_id = YOUR_ACCESS_KEY
+aws_secret_access_key = YOUR_SECRET_KEY
+
+[myprofile]
+aws_access_key_id = ANOTHER_ACCESS_KEY
+aws_secret_access_key = ANOTHER_SECRET_KEY
+```
+
+To use a specific profile, add to your `env.local`:
+```ini
+[DEV]
+APPSYNC_API_URL=https://your-api.appsync-api.us-east-1.amazonaws.com/graphql
+AWS_PROFILE=myprofile
+```
 
 ### AppSync Authentication
 
-The script uses **Cognito User Pool JWT authentication** for AppSync GraphQL requests:
+The script supports multiple authentication methods:
 
-1. **Cognito JWT Authentication (Primary)**: 
-   - Prompts for username and password at runtime
-   - Authenticates with Cognito User Pool using the specified App Client ID
-   - Uses JWT token in Authorization header for all GraphQL requests
-   - Requires `COGNITO_USER_POOL_ID` and `COGNITO_CLIENT_ID` to be set
-   - Your AppSync API must have Cognito User Pool authentication enabled
-   - The App Client must have `USER_PASSWORD_AUTH` flow enabled
+#### 1. Cognito JWT Authentication (Default)
+- Prompts for username and password at runtime
+- Authenticates with Cognito User Pool using the specified App Client ID
+- Uses JWT token in Authorization header for all GraphQL requests
+- Requires `COGNITO_USER_POOL_ID` and `COGNITO_CLIENT_ID` to be set
+- Your AppSync API must have Cognito User Pool authentication enabled
+- The App Client must have `USER_PASSWORD_AUTH` flow enabled
 
-2. **API Key Authentication (Fallback)**: 
-   - Set `APPSYNC_API_KEY` in `env.local` to use API Key instead
-   - Requires API Key authentication to be enabled on your AppSync API
+```bash
+# Default - uses Cognito JWT authentication
+python process_registration.py input.xlsx --env DEV
+```
 
-3. **IAM Authentication (Fallback)**: 
-   - Only used if neither JWT token nor API Key is provided
-   - Requires IAM authentication to be enabled on your AppSync API
+#### 2. IAM Authentication (--iam flag)
+- Uses AWS credentials from `~/.aws/credentials`
+- Specify a profile with `AWS_PROFILE` in env.local, or uses `default` profile
+- Uses AWS Signature V4 for request signing
+- Requires IAM authentication to be enabled on your AppSync API
 
-**Note**: The script will prompt you for username and password when you run it. This authenticates you with Cognito User Pool to get a JWT token that's used for all GraphQL operations. You must specify the `COGNITO_CLIENT_ID` since there may be multiple App Clients in your User Pool.
+```bash
+# Use IAM authentication from ~/.aws/credentials
+python process_registration.py input.xlsx --env DEV --iam
+```
+
+To use a specific AWS profile, add to your env.local:
+```ini
+[DEV]
+APPSYNC_API_URL=https://your-api.appsync-api.us-east-1.amazonaws.com/graphql
+AWS_PROFILE=your-profile-name
+```
+
+#### 3. API Key Authentication
+- Set `APPSYNC_API_KEY` in `env.local` to use API Key instead
+- Requires API Key authentication to be enabled on your AppSync API
+
+#### Authentication Debugging
+
+Use `--verbose` to see detailed authentication information:
+```bash
+python process_registration.py input.xlsx --env DEV --verbose
+```
+
+This shows:
+- Which authentication method is being used
+- JWT claims (for Cognito auth): user ID, email, groups, token issuer
+- AWS credentials info (for IAM auth): profile, access key prefix
+
+If you get `UnauthorizedException` errors, try the `--bearer` flag which adds "Bearer" prefix to the Authorization header:
+```bash
+python process_registration.py input.xlsx --env DEV --bearer --verbose
+```
+
+**Note**: The script will prompt you for username and password when you run it (unless using `--iam`). This authenticates you with Cognito User Pool to get a JWT token that's used for all GraphQL operations.
 
 ### Cognito Integration (Required)
 
